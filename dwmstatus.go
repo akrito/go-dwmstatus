@@ -1,24 +1,18 @@
 package main
 
-// #cgo LDFLAGS: -lX11 -lasound
+// #cgo LDFLAGS: -lX11
 // #include <X11/Xlib.h>
-// #include "getvol.h"
 import "C"
 
 import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"strings"
 	"time"
 )
 
 var dpy = C.XOpenDisplay(nil)
-
-func getVolumePerc() int {
-	return int(C.get_volume_perc())
-}
 
 func getBatteryPercentage(path string) (perc int, err error) {
 	energy_now, err := ioutil.ReadFile(fmt.Sprintf("%s/energy_now", path))
@@ -38,6 +32,19 @@ func getBatteryPercentage(path string) (perc int, err error) {
 	return
 }
 
+func getWatts(path string) (watts float64, err error) {
+	power_now, err := ioutil.ReadFile(fmt.Sprintf("%s/power_now", path))
+	if err != nil {
+		watts = -1.0
+		return
+	}
+	var pnow int
+	fmt.Sscanf(string(power_now), "%d", &pnow)
+	watts = float64(pnow) / 1e6
+	return
+}
+
+
 func getLoadAverage(file string) (lavg string, err error) {
 	loadavg, err := ioutil.ReadFile(file)
 	if err != nil {
@@ -52,53 +59,6 @@ func setStatus(s *C.char) {
 	C.XSync(dpy, 1)
 }
 
-func nowPlaying(addr string) (np string, err error) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		np = "Couldn't connect to mpd."
-		return
-	}
-	defer conn.Close()
-	reply := make([]byte, 512)
-	conn.Read(reply) // The mpd OK has to be read before we can actually do things.
-
-	message := "status\n"
-	conn.Write([]byte(message))
-	conn.Read(reply)
-	r := string(reply)
-	arr := strings.Split(string(r), "\n")
-	if arr[8] != "state: play" { //arr[8] is the state according to the mpd documentation
-		status := strings.SplitN(arr[8], ": ", 2)
-		np = fmt.Sprintf("mpd - [%s]", status[1]) //status[1] should now be stopped or paused
-		return
-	}
-
-	message = "currentsong\n"
-	conn.Write([]byte(message))
-	conn.Read(reply)
-	r = string(reply)
-	arr = strings.Split(string(r), "\n")
-	if len(arr) > 5 {
-		var artist, title string
-		for _, info := range arr {
-			field := strings.SplitN(info, ":", 2)
-			switch field[0] {
-			case "Artist":
-				artist = strings.TrimSpace(field[1])
-			case "Title":
-				title = strings.TrimSpace(field[1])
-			default:
-				//do nothing with the field
-			}
-		}
-		np = artist + " - " + title
-		return
-	} else { //This is a nonfatal error.
-		np = "Playlist is empty."
-		return
-	}
-}
-
 func formatStatus(format string, args ...interface{}) *C.char {
 	status := fmt.Sprintf(format, args...)
 	return C.CString(status)
@@ -109,7 +69,7 @@ func main() {
 		log.Fatal("Can't open display")
 	}
 	for {
-		t := time.Now().Format("Mon 02 15:04")
+		t := time.Now().Format("Mon, 2 Jan • 15:04")
 		b, err := getBatteryPercentage("/sys/class/power_supply/BAT0")
 		if err != nil {
 			log.Println(err)
@@ -118,13 +78,12 @@ func main() {
 		if err != nil {
 			log.Println(err)
 		}
-		m, err := nowPlaying("localhost:6600")
+		w, err := getWatts("/sys/class/power_supply/BAT0")
 		if err != nil {
 			log.Println(err)
 		}
-		vol := getVolumePerc()
-		s := formatStatus("%s :: %d%% :: %s :: %s :: %d%%", m, vol, l, t, b)
+		s := formatStatus(" %s • %.3gW • %d%% • %s", l, w, b, t)
 		setStatus(s)
-		time.Sleep(time.Second)
+		time.Sleep(time.Second * 5)
 	}
 }
